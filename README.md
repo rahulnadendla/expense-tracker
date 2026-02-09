@@ -292,13 +292,13 @@ Before pushing to GitHub:
 
 ---
 
-## 🤝 Setup for Your Friend
+## 🤝 Setup for You
 
-**Your friend will need:**
+**You will need:**
 
-1. **Their own Supabase project** (free tier works)
-2. **Their own Gemini API key** (free tier: 10 RPM, paid: 1000 RPM)
-3. **Access to their Gmail** (for Apps Script setup)
+1. **Your own Supabase project** (free tier works)
+2. **Your own Gemini API key** (free tier: 10 RPM, paid: 1000 RPM)
+3. **Access to your Gmail** (for Apps Script setup)
 4. **Node.js 18+** installed
 
 **Steps they should follow:**
@@ -307,8 +307,6 @@ Before pushing to GitHub:
 3. Configure their own credentials
 4. Set up their own Google Apps Script
 5. Label their Swiggy emails
-
-**Each user's data is completely isolated** - separate Supabase projects mean separate databases.
 
 ---
 
