@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Environment variables (NEVER commit these!)
+.env
+.env.local
+.env*.local
+*.env
+
+# Build outputs
+.next/
+out/
+build/
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Credentials and secrets
+**/credentials.json
+**/*secret*
+**/*password*
+**/*token*
+SUPABASE_CREDENTIALS_FOR_APPS_SCRIPT.md
+
+# Example invoices (may contain personal data)
+example invoices/
+
+# Personal notes
+notes.txt
+TODO.txt
