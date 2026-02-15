@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import type { AdminStats } from '@/lib/types';
 
 const COLORS = ['#FC8019', '#E23744', '#F59E0B', '#10B981', '#3B82F6', '#8B5CF6'];
 
@@ -9,13 +11,34 @@ export default function Home() {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [parsing, setParsing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'analytics' | 'orders'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'analytics' | 'orders' | 'admin'>('overview');
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'food' | 'grocery'>('all');
   const [periodFilter, setPeriodFilter] = useState<'daily' | 'weekly' | 'monthly'>('monthly');
+  const [adminStats, setAdminStats] = useState<AdminStats | null>(null);
+  const [adminLoading, setAdminLoading] = useState(false);
 
   useEffect(() => {
     fetchStats();
   }, [categoryFilter, periodFilter]);
+
+  useEffect(() => {
+    if (activeTab === 'admin') {
+      fetchAdminStats();
+    }
+  }, [activeTab]);
+
+  async function fetchAdminStats() {
+    setAdminLoading(true);
+    try {
+      const res = await fetch('/api/admin/stats');
+      const data = await res.json();
+      if (res.ok) setAdminStats(data);
+    } catch (err) {
+      console.error('Failed to fetch admin stats:', err);
+    } finally {
+      setAdminLoading(false);
+    }
+  }
 
   async function fetchStats() {
     setLoading(true);
@@ -80,8 +103,8 @@ export default function Home() {
 
       {/* Tabs */}
       <div className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <nav className="flex space-x-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 overflow-x-auto">
+          <nav className="flex space-x-8 min-w-max">
             <button
               onClick={() => setActiveTab('overview')}
               className={`py-4 px-1 border-b-2 font-medium text-sm ${
@@ -112,6 +135,16 @@ export default function Home() {
             >
               Orders
             </button>
+            <button
+              onClick={() => setActiveTab('admin')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                activeTab === 'admin'
+                  ? 'border-orange-500 text-orange-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              Admin
+            </button>
           </nav>
         </div>
       </div>
@@ -128,6 +161,12 @@ export default function Home() {
         )}
         {activeTab === 'analytics' && <AnalyticsTab stats={stats} />}
         {activeTab === 'orders' && <OrdersTab stats={stats} />}
+        {activeTab === 'admin' && (
+          <AdminTab
+            adminStats={adminStats}
+            adminLoading={adminLoading}
+          />
+        )}
       </div>
     </main>
   );
@@ -335,12 +374,12 @@ function OverviewTab({
               <h2 className="text-xl font-semibold text-gray-900">Top Items (by Volume)</h2>
               <p className="text-xs text-gray-500 mt-1">Most frequently ordered</p>
             </div>
-            <a
+            <Link
               href="/items"
               className="px-4 py-2 bg-orange-500 text-white text-sm font-medium rounded-lg hover:bg-orange-600 transition-colors"
             >
               View All
-            </a>
+            </Link>
           </div>
           <div className="p-6">
             <div className="space-y-3">
@@ -388,12 +427,12 @@ function OverviewTab({
               <h2 className="text-xl font-semibold text-gray-900">Top Items (by Spend)</h2>
               <p className="text-xs text-gray-500 mt-1">Highest total spending</p>
             </div>
-            <a
+            <Link
               href="/items"
               className="px-4 py-2 bg-orange-500 text-white text-sm font-medium rounded-lg hover:bg-orange-600 transition-colors"
             >
               View All
-            </a>
+            </Link>
           </div>
           <div className="p-6">
             <div className="space-y-3">
@@ -665,6 +704,122 @@ function OrdersTab({ stats }: { stats: any }) {
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function AdminTab({
+  adminStats,
+  adminLoading,
+}: {
+  adminStats: AdminStats | null;
+  adminLoading: boolean;
+}) {
+  if (adminLoading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-10 w-10 border-b-2 border-orange-500"></div>
+          <p className="mt-3 text-gray-600">Loading admin stats...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!adminStats) {
+    return (
+      <div className="bg-white rounded-lg shadow p-8 text-center text-gray-500">
+        Failed to load admin stats.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* Stat cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white rounded-lg shadow p-6">
+          <p className="text-sm text-gray-600 mb-1">Invoices Uploaded</p>
+          <p className="text-3xl font-bold text-gray-900">{adminStats.invoicesUploaded}</p>
+        </div>
+        <div className="bg-white rounded-lg shadow p-6">
+          <p className="text-sm text-gray-600 mb-1">Total Orders</p>
+          <p className="text-3xl font-bold text-orange-600">{adminStats.ordersCount}</p>
+          {adminStats.invoicesParsed !== adminStats.ordersCount && (
+            <p className="text-xs text-gray-500 mt-1">
+              from {adminStats.invoicesParsed} invoice PDFs processed
+            </p>
+          )}
+        </div>
+        <div className="bg-white rounded-lg shadow p-6">
+          <p className="text-sm text-gray-600 mb-1">Last Parsed Invoice</p>
+          {adminStats.lastParsedInvoice ? (
+            <>
+              <p className="text-lg font-semibold text-gray-900">
+                {new Date(adminStats.lastParsedInvoice.parsed_at).toLocaleString('en-IN', {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                })}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                Status: <span className="font-medium capitalize text-gray-700">{adminStats.lastParsedInvoice.parsed_status}</span>
+              </p>
+              {adminStats.lastParsedInvoice.file_name && (
+                <p className="text-sm text-gray-500 mt-1 truncate" title={adminStats.lastParsedInvoice.file_name}>
+                  {adminStats.lastParsedInvoice.file_name}
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-gray-500">No invoices parsed yet</p>
+          )}
+        </div>
+      </div>
+
+      {/* Failed parsing logs */}
+      <div className="bg-white rounded-lg shadow">
+        <div className="px-6 py-4 border-b border-gray-200">
+          <h2 className="text-xl font-semibold text-gray-900">Failed Parsing Logs</h2>
+          <p className="text-sm text-gray-500 mt-1">Timestamps and failure reasons</p>
+        </div>
+        <div className="overflow-x-auto">
+          {adminStats.failedParsingLogs.length === 0 ? (
+            <div className="p-8 text-center text-gray-500">No failed parsing logs.</div>
+          ) : (
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order date</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">File</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Failure reason</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {adminStats.failedParsingLogs.map((log, idx) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {new Date(log.created_at).toLocaleString('en-IN', {
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      })}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {log.order_date
+                        ? new Date(log.order_date).toLocaleDateString('en-IN', { dateStyle: 'medium' })
+                        : '—'}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate" title={log.file_name ?? undefined}>
+                      {log.file_name ?? '—'}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-red-600">{log.error_message ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </div>
   );

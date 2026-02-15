@@ -49,3 +49,12 @@ export interface ParseSummary {
   remaining: number;
   errors: string[];
 }
+
+export interface AdminStats {
+  invoicesUploaded: number;
+  invoicesParsed: number;
+  /** Total orders in system; matches Overview "Total orders" when category is All */
+  ordersCount: number;
+  lastParsedInvoice: { parsed_at: string; file_name: string | null; parsed_status: string } | null;
+  failedParsingLogs: { created_at: string; error_message: string | null; file_name: string | null; order_date: string | null }[];
+}
