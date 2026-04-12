@@ -764,6 +764,14 @@ function AdvisorTab({
   categoryFilter: 'all' | 'food' | 'grocery';
   periodFilter: 'daily' | 'weekly' | 'monthly';
 }) {
+  const starterPrompts = [
+    'Give me a quick summary of my spending trend in this filter.',
+    'How many invoices were uploaded and parsed this month?',
+    'What is the current parsing success rate and what should I monitor?',
+    'Show top 5 items by order volume and spend in a table.',
+    'Give me 3 practical ways to reduce my monthly food delivery spend.',
+    'Based on my top items, suggest healthier alternatives I can try.',
+  ];
   const [messages, setMessages] = useState<AdvisorMessage[]>([
     {
       role: 'assistant',
@@ -773,6 +781,7 @@ function AdvisorTab({
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showStarterPrompts, setShowStarterPrompts] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -822,6 +831,7 @@ function AdvisorTab({
 
   function clearChat() {
     setError(null);
+    setShowStarterPrompts(true);
     setMessages([
       {
         role: 'assistant',
@@ -835,9 +845,12 @@ function AdvisorTab({
       <div className="bg-white rounded-lg shadow p-6 space-y-3">
         <h2 className="text-xl font-semibold text-gray-900">AI Advisor</h2>
         <p className="text-sm text-gray-600">
-          Answers use aggregated dashboard data for your selected filters:
+          Answers use aggregated dashboard analytics for your selected filters, plus high-level invoice and parsing KPIs:
           <span className="font-medium text-gray-900"> {categoryFilter}</span> category and
           <span className="font-medium text-gray-900"> {periodFilter}</span> period.
+        </p>
+        <p className="text-xs text-gray-500">
+          The advisor uses KPI-level operations metrics only and does not access raw parsing failure logs.
         </p>
         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
           Educational information only. This is not professional financial, medical, or nutrition advice.
@@ -883,6 +896,27 @@ function AdvisorTab({
         <div className="px-6 pb-6 space-y-3">
           {error && (
             <p className="text-sm text-red-600">{error}</p>
+          )}
+          {showStarterPrompts && (
+            <div>
+              <p className="text-xs font-medium text-gray-700 mb-2">Starter prompts</p>
+              <div className="flex flex-wrap gap-2">
+                {starterPrompts.map((prompt, index) => (
+                  <button
+                    key={index}
+                    type="button"
+                    disabled={sending}
+                    onClick={() => {
+                      setInput(prompt);
+                      setShowStarterPrompts(false);
+                    }}
+                    className="px-3 py-1.5 text-xs bg-gray-100 text-gray-700 rounded-full hover:bg-gray-200 disabled:bg-gray-50 disabled:text-gray-400 text-left"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
           <div className="flex gap-3">
             <textarea

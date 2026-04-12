@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { computeStatsSnapshot } from '@/lib/compute-stats';
+import { computeAdvisorOpsKpis } from '@/lib/compute-advisor-ops';
 import { generateAdvisorReply, type AdvisorMessage } from '@/lib/analyst-model';
 
 const MAX_BODY_BYTES = 40 * 1024;
@@ -129,9 +130,11 @@ export async function POST(request: Request) {
     }
 
     const { stats, categoryFilter, periodFilter } = await computeStatsSnapshot(parsed.body.category, parsed.body.period);
+    const opsKpis = await computeAdvisorOpsKpis();
     const reply = await generateAdvisorReply({
       messages: parsed.body.messages,
       stats,
+      opsKpis,
       categoryFilter,
       periodFilter,
     });
