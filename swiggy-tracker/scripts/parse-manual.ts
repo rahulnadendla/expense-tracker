@@ -6,7 +6,8 @@
 async function main() {
   console.log('Triggering PDF parsing...\n');
 
-  const response = await fetch('http://localhost:3000/api/parse-invoices', {
+  const port = process.env.PORT || '4000';
+  const response = await fetch(`http://localhost:${port}/api/parse-invoices`, {
     method: 'POST',
   });
 

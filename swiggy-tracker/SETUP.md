@@ -18,11 +18,36 @@ nvm use 18
 node --version  # Should show v18.x.x or v20.x.x
 ```
 
-**Option 3: Deploy to Vercel**
+**Option 3: Homebrew (macOS)**  
+If you already have Node 20 via Homebrew but your terminal uses an old system Node, run commands with:
+```bash
+export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+```
+Then run `npm run build` and `npm start` as usual.
+
+**Option 4: Deploy to Vercel**
 - Push this code to GitHub
 - Connect to Vercel (free): [vercel.com](https://vercel.com)
 - Add environment variables in Vercel dashboard
 - Auto-deploys on push
+
+---
+
+## Start the app (after setup)
+
+**If your terminal uses old Node (e.g. v4), use one of these:**
+
+```bash
+cd /Users/rahulnadendla/cursor_project_2/swiggy-tracker
+export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+npm run build && npm start
+```
+Then open **http://localhost:4000**
+
+Or run the script (same folder):
+```bash
+bash start.sh
+```
 
 ---
 

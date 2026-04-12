@@ -51,10 +51,40 @@ export interface ParseSummary {
 }
 
 export interface AdminStats {
+  selectedMonth: string;
+  monthRange: { startIst: string; endIstExclusive: string };
   invoicesUploaded: number;
   invoicesParsed: number;
   /** Total orders in system; matches Overview "Total orders" when category is All */
   ordersCount: number;
+  reconciliation: {
+    invoicesUploaded: number;
+    invoicesParsed: number;
+    ordersCreated: number;
+    deltaParsedVsOrders: number;
+    isMismatch: boolean;
+  };
+  parsing: {
+    total: number;
+    completed: number;
+    failed: number;
+    pending: number;
+    processing: number;
+    successRate: number;
+    topFailureReasons: { reason: string; count: number }[];
+  };
+  categorySplit: {
+    food: number;
+    grocery: number;
+    total: number;
+  };
+  freshness: {
+    lastInvoiceUploadedAt: string | null;
+    lastParsedAt: string | null;
+    lastOrderAt: string | null;
+    staleHours: number | null;
+    isStale: boolean;
+  };
   lastParsedInvoice: { parsed_at: string; file_name: string | null; parsed_status: string } | null;
   failedParsingLogs: { created_at: string; error_message: string | null; file_name: string | null; order_date: string | null }[];
 }
