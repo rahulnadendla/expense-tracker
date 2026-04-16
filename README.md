@@ -194,8 +194,7 @@ GEMINI_API_KEY=AI...your-key-here
 
 ---
 
-## 🗄️ Database Schema
-
+## 🗄️ Database Schema (needs to be updated)
 Run this in Supabase SQL Editor:
 
 ```sql
