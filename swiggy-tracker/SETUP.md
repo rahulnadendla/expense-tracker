@@ -68,6 +68,8 @@ Edit `.env.local`:
 
 ```env
 SUPABASE_SERVICE_ROLE_KEY=<paste-your-actual-key-here>
+PARSE_TRIGGER_SECRET=<long-random-secret-for-event-webhook>
+CRON_SECRET=<long-random-secret-for-vercel-cron>
 ```
 
 **Where to find it:**
@@ -85,14 +87,17 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000)
 
-The parser runs automatically when the page loads.
+Parsing freshness strategy:
+- Event-driven parse on new `invoices_raw` inserts (webhook)
+- Daily cron fallback for reconciliation
+- App-load fallback only for stale pending backlog
 
 ---
 
 ## Verify It's Working
 
 ### Check 1: Page loads
-- You should see "Swiggy Expense Tracker" with a "Parse Now" button
+- You should see "Swiggy Expense Tracker" with a "Parse New Invoices" button
 
 ### Check 2: Parsing starts
 - Watch the console/terminal for logs
@@ -125,10 +130,10 @@ Go to Supabase Dashboard → **Table Editor**:
 
 ## What Happens Next?
 
-1. **Parser processes 10 invoices per run** (to avoid timeouts)
-2. You have **57 pending** → run ~6 times to process all
-3. Click "Parse Now" or reload the page to process more batches
-4. Apps Script continues uploading new PDFs → parser will handle them automatically when you open the dashboard
+1. **Parser processes 20 invoices per run** (to avoid timeouts)
+2. You have **57 pending** -> run ~3 times to process all
+3. Click "Parse New Invoices" for immediate catch-up
+4. Apps Script continues uploading new PDFs -> webhook triggers parser automatically
 
 ---
 

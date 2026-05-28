@@ -1,19 +1,79 @@
 import { NextResponse } from 'next/server';
 import { supabase, BUCKET_NAME } from '@/lib/supabase';
 import { parsePDF } from '@/lib/pdf-parser';
-import type { InvoiceRaw, ParseResult, ParseSummary } from '@/lib/types';
+import type { InvoiceRaw, ParseFreshnessStatus, ParseResult, ParseSummary } from '@/lib/types';
 
 const BATCH_SIZE = 20; // Process 20 invoices per request (paid tier: 1000 RPM, 10K RPD)
+const PARSE_COOLDOWN_MS = 60 * 1000;
+const STALE_ON_LOAD_MINUTES = 24 * 60;
+const INTERACTIVE_PARSE_COOLDOWN_MS = 15 * 1000;
 
-export async function GET() {
-  return parseInvoices();
+type ParseSource = 'manual' | 'auto' | 'cron' | 'auto_on_load';
+type ProcessInvoiceResult = ParseResult & { skipped?: boolean };
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __parseInvoicesInProgress: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __parseInvoicesLastRunAt: number | undefined;
+  // eslint-disable-next-line no-var
+  var __manualParseLastRunByIp: Map<string, number> | undefined;
 }
 
-export async function POST() {
-  return parseInvoices();
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const mode = searchParams.get('mode');
+  if (mode === 'status') {
+    return getParseStatusResponse();
+  }
+
+  const source = parseSourceFromRaw(searchParams.get('source'));
+  if (source !== 'cron') return NextResponse.json({ error: 'GET not supported for this source' }, { status: 405 });
+  const authResponse = validateCronAuth(source, request);
+  if (authResponse) return authResponse;
+
+  return parseInvoices(source);
 }
 
-async function parseInvoices() {
+export async function POST(request: Request) {
+  const sourceHeader = request.headers.get('x-parse-source');
+  if (!sourceHeader || !isParseSource(sourceHeader)) {
+    return NextResponse.json({ error: 'Invalid parse source' }, { status: 400 });
+  }
+  const source = sourceHeader;
+  const interactiveResponse = validateInteractiveRequest(source, request);
+  if (interactiveResponse) return interactiveResponse;
+  const authResponse = validateCronAuth(source, request);
+  if (authResponse) return authResponse;
+
+  return parseInvoices(source);
+}
+
+async function parseInvoices(source: ParseSource) {
+  if (globalThis.__parseInvoicesInProgress) {
+    return NextResponse.json(
+      {
+        message: 'Parsing already in progress',
+        source,
+      },
+      { status: 202 }
+    );
+  }
+
+  const now = Date.now();
+  const lastRunAt = globalThis.__parseInvoicesLastRunAt ?? 0;
+  if (source !== 'manual' && now - lastRunAt < PARSE_COOLDOWN_MS) {
+    return NextResponse.json(
+      {
+        message: 'Auto parse skipped due to cooldown',
+        source,
+      },
+      { status: 200 }
+    );
+  }
+
+  globalThis.__parseInvoicesInProgress = true;
+
   const summary: ParseSummary = {
     parsed: 0,
     failed: 0,
@@ -31,8 +91,9 @@ async function parseInvoices() {
       .limit(BATCH_SIZE);
 
     if (queryError) {
+      console.error('Failed to query pending invoices:', queryError);
       return NextResponse.json(
-        { error: 'Failed to query pending invoices', details: queryError.message },
+        { error: 'Failed to query pending invoices' },
         { status: 500 }
       );
     }
@@ -40,6 +101,7 @@ async function parseInvoices() {
     if (!pendingInvoices || pendingInvoices.length === 0) {
       return NextResponse.json({
         message: 'No pending invoices to process',
+        source,
         summary,
       });
     }
@@ -49,8 +111,10 @@ async function parseInvoices() {
     // 2. Process each invoice with rate limiting (avoid API limits)
     for (const invoice of pendingInvoices as InvoiceRaw[]) {
       const result = await processOneInvoice(invoice);
-      
-      if (result.success) {
+
+      if (result.skipped) {
+        summary.skipped++;
+      } else if (result.success) {
         summary.parsed++;
       } else {
         summary.failed++;
@@ -58,9 +122,9 @@ async function parseInvoices() {
           summary.errors.push(`${invoice.file_name}: ${result.error}`);
         }
       }
-      
+
       summary.remaining--;
-      
+
       // Rate limiting: 100ms delay between API calls (paid tier: 1000 RPM = ~60ms per request)
       if (summary.remaining > 0) {
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -77,19 +141,42 @@ async function parseInvoices() {
 
     return NextResponse.json({
       message: `Processed ${summary.parsed} invoices`,
+      source,
       summary,
     });
   } catch (error: any) {
     console.error('Parse invoices error:', error);
     return NextResponse.json(
-      { error: 'Internal server error', details: error.message },
+      { error: 'Internal server error' },
       { status: 500 }
     );
+  } finally {
+    globalThis.__parseInvoicesInProgress = false;
+    globalThis.__parseInvoicesLastRunAt = Date.now();
   }
 }
 
-async function processOneInvoice(invoice: InvoiceRaw): Promise<ParseResult> {
+async function processOneInvoice(invoice: InvoiceRaw): Promise<ProcessInvoiceResult> {
   try {
+    const { data: claimedRows, error: claimError } = await supabase
+      .from('invoices_raw')
+      .update({ parsed_status: 'processing' })
+      .eq('id', invoice.id)
+      .eq('parsed_status', 'pending')
+      .select('id');
+
+    if (claimError) {
+      throw new Error(`Failed to claim invoice for processing: ${claimError.message}`);
+    }
+
+    if (!claimedRows || claimedRows.length === 0) {
+      return {
+        success: true,
+        invoice_id: invoice.id,
+        skipped: true,
+      };
+    }
+
     // 1. Download PDF from Storage
     const pdfPath = extractPathFromUrl(invoice.pdf_url || '', invoice.file_name || '');
     const { data: pdfData, error: downloadError } = await supabase.storage
@@ -254,4 +341,135 @@ function extractPathFromUrl(pdfUrl: string, fileName: string): string {
 
   // Last resort: use file_name
   return fileName;
+}
+
+async function getParseStatusResponse() {
+  try {
+    const [
+      { count: pending, error: pendingError },
+      { count: processing, error: processingError },
+      { count: failed, error: failedError },
+      { data: lastParsedRow, error: lastParsedError },
+      { data: lastInvoiceRow, error: lastInvoiceError },
+    ] =
+      await Promise.all([
+        supabase.from('invoices_raw').select('*', { count: 'exact', head: true }).eq('parsed_status', 'pending'),
+        supabase.from('invoices_raw').select('*', { count: 'exact', head: true }).eq('parsed_status', 'processing'),
+        supabase.from('invoices_raw').select('*', { count: 'exact', head: true }).eq('parsed_status', 'failed'),
+        supabase
+          .from('invoices_raw')
+          .select('parsed_at')
+          .eq('parsed_status', 'completed')
+          .not('parsed_at', 'is', null)
+          .order('parsed_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabase
+          .from('invoices_raw')
+          .select('created_at')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+
+    const firstError =
+      pendingError || processingError || failedError || lastParsedError || lastInvoiceError;
+    if (firstError) {
+      console.error('Failed to fetch parse status:', firstError);
+      return NextResponse.json(
+        { error: 'Failed to fetch parsing freshness status' },
+        { status: 500 }
+      );
+    }
+
+    const lastInvoiceUploadedAt = lastInvoiceRow?.created_at ?? null;
+    const lastParsedAt = lastParsedRow?.parsed_at ?? null;
+    const staleMinutes =
+      lastParsedAt === null
+        ? null
+        : Math.max(0, Math.round((Date.now() - new Date(lastParsedAt).getTime()) / (1000 * 60)));
+    const pendingCount = pending ?? 0;
+    const hasPending = pendingCount > 0;
+    const isStale = staleMinutes === null || staleMinutes >= STALE_ON_LOAD_MINUTES;
+    const status: ParseFreshnessStatus = {
+      pending: pendingCount,
+      processing: processing ?? 0,
+      failed: failed ?? 0,
+      lastInvoiceUploadedAt,
+      lastParsedAt,
+      staleMinutes,
+      hasPending,
+      isStale,
+      shouldAutoParseOnLoad: hasPending && isStale,
+    };
+
+    return NextResponse.json(status);
+  } catch (error: any) {
+    console.error('Failed to fetch parse status response:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch parsing freshness status' },
+      { status: 500 }
+    );
+  }
+}
+
+function isParseSource(rawSource: string): rawSource is ParseSource {
+  return rawSource === 'manual' || rawSource === 'auto' || rawSource === 'cron' || rawSource === 'auto_on_load';
+}
+
+function parseSourceFromRaw(rawSource: string | null): ParseSource | null {
+  if (rawSource === null) return 'manual';
+  return isParseSource(rawSource) ? rawSource : null;
+}
+
+function validateCronAuth(source: ParseSource, request: Request) {
+  if (source === 'manual' || source === 'auto_on_load') return null;
+
+  const authHeader = request.headers.get('authorization');
+  const expectedSecret = source === 'cron' ? process.env.CRON_SECRET : process.env.PARSE_TRIGGER_SECRET;
+  if (!expectedSecret) {
+    console.error(`Missing secret for parse source ${source}`);
+    return NextResponse.json({ error: 'Server misconfiguration' }, { status: 500 });
+  }
+
+  if (authHeader !== `Bearer ${expectedSecret}`) {
+    return NextResponse.json({ error: 'Unauthorized request' }, { status: 401 });
+  }
+
+  return null;
+}
+
+function validateInteractiveRequest(source: ParseSource, request: Request) {
+  if (source !== 'manual' && source !== 'auto_on_load') return null;
+
+  const origin = request.headers.get('origin');
+  const host = request.headers.get('host');
+  if (!origin || !host) {
+    return NextResponse.json({ error: 'Missing request origin' }, { status: 403 });
+  }
+  if (origin && host) {
+    const expectedOrigin = `https://${host}`;
+    const expectedOriginHttp = `http://${host}`;
+    if (origin !== expectedOrigin && origin !== expectedOriginHttp) {
+      return NextResponse.json({ error: 'Cross-origin parse request blocked' }, { status: 403 });
+    }
+  }
+
+  const ip = getClientIp(request);
+  const now = Date.now();
+  if (!globalThis.__manualParseLastRunByIp) {
+    globalThis.__manualParseLastRunByIp = new Map<string, number>();
+  }
+  const lastAt = globalThis.__manualParseLastRunByIp.get(ip) ?? 0;
+  if (now - lastAt < INTERACTIVE_PARSE_COOLDOWN_MS) {
+    return NextResponse.json({ error: 'Parse request rate-limited' }, { status: 429 });
+  }
+  globalThis.__manualParseLastRunByIp.set(ip, now);
+  return null;
+}
+
+function getClientIp(request: Request) {
+  const forwarded = request.headers.get('x-forwarded-for');
+  if (!forwarded) return 'unknown';
+  return forwarded.split(',')[0]?.trim() || 'unknown';
 }

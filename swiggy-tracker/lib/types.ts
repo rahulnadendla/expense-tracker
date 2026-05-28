@@ -50,6 +50,18 @@ export interface ParseSummary {
   errors: string[];
 }
 
+export interface ParseFreshnessStatus {
+  pending: number;
+  processing: number;
+  failed: number;
+  lastInvoiceUploadedAt: string | null;
+  lastParsedAt: string | null;
+  staleMinutes: number | null;
+  hasPending: boolean;
+  isStale: boolean;
+  shouldAutoParseOnLoad: boolean;
+}
+
 export interface AdminStats {
   selectedMonth: string;
   monthRange: { startIst: string; endIstExclusive: string };

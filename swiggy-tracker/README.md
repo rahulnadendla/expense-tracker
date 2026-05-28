@@ -30,6 +30,8 @@ Edit `.env.local` and add your **Service Role Key**:
 NEXT_PUBLIC_SUPABASE_URL=https://waoonuuwborifiraklue.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<paste-your-service-role-key-here>
 BUCKET_NAME=swiggy-invoices
+PARSE_TRIGGER_SECRET=<long-random-secret-for-event-webhook>
+CRON_SECRET=<long-random-secret-for-vercel-cron>
 ```
 
 Get the service role key from: **Supabase Dashboard → Project Settings → API → `service_role`**
@@ -42,7 +44,10 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-The dashboard will **automatically trigger parsing** when you load the page. It processes up to 10 pending invoices per run.
+Freshness strategy:
+- Primary: event-driven parsing when `invoices_raw` gets new rows
+- Secondary: once-daily cron reconciliation
+- Guardrail: app-load fallback only when pending backlog is stale
 
 ## How It Works
 
@@ -73,9 +78,10 @@ The dashboard will **automatically trigger parsing** when you load the page. It 
 ### Dashboard (Automatic)
 
 1. Open `http://localhost:3000`
-2. Parser runs automatically on page load
-3. Click "Parse Now" to process more batches
-4. View stats: parsed, failed, remaining
+2. Dashboard loads existing analytics immediately
+3. If stale pending backlog exists, fallback parsing runs in background
+4. Click "Parse New Invoices" to process immediately
+5. View stats: parsed, failed, remaining
 
 ### Manual Trigger (Command Line)
 
@@ -95,7 +101,7 @@ curl http://localhost:3000/api/parse-invoices
 Response:
 ```json
 {
-  "message": "Processed 10 invoices",
+  "message": "Processed 20 invoices",
   "summary": {
     "parsed": 9,
     "failed": 1,
@@ -104,6 +110,21 @@ Response:
     "errors": ["file.pdf: Could not extract Order ID"]
   }
 }
+```
+
+Freshness status endpoint:
+
+```bash
+curl "http://localhost:3000/api/parse-invoices?mode=status"
+```
+
+Event ingest endpoint (for Supabase webhooks):
+
+```bash
+curl -X POST "http://localhost:3000/api/parse-invoices/event" \
+  -H "Authorization: Bearer $PARSE_TRIGGER_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"INSERT","table":"invoices_raw","record":{"id":"example"}}'
 ```
 
 ## Testing with Example PDFs
@@ -117,6 +138,18 @@ To test locally before running on the 57 real PDFs:
 1. Manually upload one test PDF to Supabase Storage
 2. Insert a row in `invoices_raw` pointing to it
 3. Run the parser and check if it extracts correctly
+
+## Event-Driven Setup (Supabase)
+
+Use Supabase Database Webhooks on `invoices_raw` inserts:
+
+1. Go to Supabase Dashboard -> Database -> Webhooks
+2. Create webhook:
+   - Table: `invoices_raw`
+   - Event: `INSERT`
+   - URL: `https://<your-app-domain>/api/parse-invoices/event`
+   - Header: `Authorization: Bearer <PARSE_TRIGGER_SECRET>`
+3. Keep daily cron enabled as fallback (`/api/parse-invoices?source=cron`)
 
 ## Parsed Data Structure
 
@@ -152,7 +185,7 @@ To test locally before running on the 57 real PDFs:
 
 Once parsing works:
 - Run multiple times until all 57 PDFs are parsed
-- Apps Script will keep adding new PDFs as they upload
+- Apps Script keeps adding PDFs; webhook triggers parsing as rows arrive
 - Phase 4: Build the analytics dashboard to visualize spending trends
 
 ## File Structure
@@ -160,7 +193,8 @@ Once parsing works:
 ```
 swiggy-tracker/
 ├── app/
-│   ├── api/parse-invoices/route.ts  # Main API logic
+│   ├── api/parse-invoices/route.ts        # Main parser + freshness status
+│   ├── api/parse-invoices/event/route.ts  # Event webhook ingest
 │   ├── page.tsx                      # Dashboard UI
 │   └── layout.tsx, globals.css
 ├── lib/

@@ -5,9 +5,10 @@ import Link from 'next/link';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AdminStats } from '@/lib/types';
+import type { AdminStats, ParseFreshnessStatus } from '@/lib/types';
 
 const COLORS = ['#FC8019', '#E23744', '#F59E0B', '#10B981', '#3B82F6', '#8B5CF6'];
+const FRESHNESS_BANNER_DISMISSED_KEY = 'freshness-banner-dismissed';
 
 function getCurrentIstMonth(): string {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -25,16 +26,45 @@ export default function Home() {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [parsing, setParsing] = useState(false);
+  const [freshness, setFreshness] = useState<ParseFreshnessStatus | null>(null);
+  const [freshnessBannerDismissed, setFreshnessBannerDismissed] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'analytics' | 'advisor' | 'orders' | 'admin'>('overview');
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'food' | 'grocery'>('all');
   const [periodFilter, setPeriodFilter] = useState<'daily' | 'weekly' | 'monthly'>('monthly');
   const [adminStats, setAdminStats] = useState<AdminStats | null>(null);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminMonth, setAdminMonth] = useState(getCurrentIstMonth());
+  const previousPendingRef = useRef(0);
 
   useEffect(() => {
     fetchStats();
   }, [categoryFilter, periodFilter]);
+
+  useEffect(() => {
+    fetchFreshness();
+  }, []);
+
+  useEffect(() => {
+    if (!freshness?.shouldAutoParseOnLoad || parsing) return;
+    void triggerParsing('auto_on_load');
+  }, [freshness?.shouldAutoParseOnLoad, parsing]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const dismissed = window.sessionStorage.getItem(FRESHNESS_BANNER_DISMISSED_KEY) === '1';
+    setFreshnessBannerDismissed(dismissed);
+  }, []);
+
+  useEffect(() => {
+    const currentPending = freshness?.pending ?? 0;
+    if (previousPendingRef.current === 0 && currentPending > 0) {
+      setFreshnessBannerDismissed(false);
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(FRESHNESS_BANNER_DISMISSED_KEY);
+      }
+    }
+    previousPendingRef.current = currentPending;
+  }, [freshness?.pending]);
 
   useEffect(() => {
     if (activeTab === 'admin') {
@@ -79,11 +109,29 @@ export default function Home() {
     }
   }
 
-  async function triggerParsing() {
+  async function fetchFreshness() {
+    try {
+      const res = await fetch('/api/parse-invoices?mode=status', { cache: 'no-store' });
+      if (!res.ok) throw new Error(res.statusText);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setFreshness(data);
+    } catch (err) {
+      console.error('Failed to fetch freshness:', err);
+      setFreshness(null);
+    }
+  }
+
+  async function triggerParsing(source: 'manual' | 'auto_on_load' = 'manual') {
     setParsing(true);
     try {
-      await fetch('/api/parse-invoices');
-      await fetchStats();
+      await fetch('/api/parse-invoices', {
+        method: 'POST',
+        headers: {
+          'x-parse-source': source,
+        },
+      });
+      await Promise.all([fetchStats(), fetchFreshness()]);
     } catch (err) {
       console.error('Failed to parse:', err);
     } finally {
@@ -130,7 +178,7 @@ export default function Home() {
               <p className="mt-2 text-orange-100">Track and analyze your food delivery spending</p>
             </div>
             <button
-              onClick={triggerParsing}
+              onClick={() => void triggerParsing('manual')}
               disabled={parsing}
               className="px-6 py-3 bg-white text-orange-600 rounded-lg hover:bg-orange-50 disabled:bg-gray-200 disabled:text-gray-400 font-semibold shadow-lg transition-colors"
             >
@@ -199,6 +247,28 @@ export default function Home() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {!freshnessBannerDismissed && (
+          <div className="mb-6 border border-orange-200 bg-orange-50 rounded-lg px-4 py-3 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm text-orange-900">
+                Last synced {formatLastSynced(freshness?.lastParsedAt)} • {freshness?.pending ?? 0} invoices pending
+                {freshness?.processing ? ` • ${freshness.processing} processing` : ''}
+              </p>
+              <p className="text-xs text-orange-700 mt-1">
+                {freshness?.shouldAutoParseOnLoad
+                  ? 'Data sync fallback is running in background because pending invoices appear stale.'
+                  : 'No stale pending backlog detected. Event-driven sync keeps data fresh in the background.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => dismissFreshnessBanner(setFreshnessBannerDismissed)}
+              className="text-xs px-2 py-1 rounded border border-orange-300 text-orange-700 hover:bg-orange-100"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {activeTab === 'overview' && (
           <OverviewTab
             stats={stats}
@@ -228,6 +298,27 @@ export default function Home() {
       </div>
     </main>
   );
+}
+
+function formatLastSynced(lastParsedAt: string | null | undefined): string {
+  if (!lastParsedAt) return 'not yet';
+
+  const diffMs = Date.now() - new Date(lastParsedAt).getTime();
+  if (Number.isNaN(diffMs) || diffMs < 0) return 'just now';
+  const mins = Math.floor(diffMs / (1000 * 60));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min${mins === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function dismissFreshnessBanner(setDismissed: (value: boolean) => void) {
+  setDismissed(true);
+  if (typeof window !== 'undefined') {
+    window.sessionStorage.setItem(FRESHNESS_BANNER_DISMISSED_KEY, '1');
+  }
 }
 
 function OverviewTab({
@@ -724,6 +815,21 @@ type AdvisorMessage = {
   content: string;
 };
 
+type AdvisorComposerError = {
+  message: string;
+  code?: string;
+  maxMessageChars?: number;
+  currentLength?: number;
+};
+
+const ADVISOR_MAX_MESSAGE_CHARS = 2000;
+
+function buildShorterDraft(input: string, maxChars: number): string {
+  const trimmed = input.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxChars - 24)).trimEnd()} ... (continued)`;
+}
+
 function AdvisorMarkdown({ content }: { content: string }) {
   return (
     <div className="space-y-2">
@@ -780,9 +886,11 @@ function AdvisorTab({
   ]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AdvisorComposerError | null>(null);
   const [showStarterPrompts, setShowStarterPrompts] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const inputChars = input.length;
+  const isOverLimit = inputChars > ADVISOR_MAX_MESSAGE_CHARS;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -790,7 +898,7 @@ function AdvisorTab({
 
   async function sendMessage() {
     const content = input.trim();
-    if (!content || sending) return;
+    if (!content || sending || isOverLimit) return;
 
     setError(null);
     setInput('');
@@ -816,14 +924,23 @@ function AdvisorTab({
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.error || 'Failed to get advisor response.');
+        const apiMessage = typeof data?.error === 'string' ? data.error : 'Failed to get advisor response.';
+        const details = data?.details && typeof data.details === 'object' ? data.details : null;
+        setError({
+          message: apiMessage,
+          code: typeof details?.code === 'string' ? details.code : undefined,
+          maxMessageChars: typeof details?.maxMessageChars === 'number' ? details.maxMessageChars : undefined,
+          currentLength: typeof details?.currentLength === 'number' ? details.currentLength : undefined,
+        });
+        // Keep user message visible in the thread, but do not append assistant turn.
+        return;
       }
 
       const reply = typeof data.reply === 'string' ? data.reply.trim() : '';
       if (!reply) throw new Error('Advisor returned an empty response.');
       setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
     } catch (err: any) {
-      setError(err?.message || 'Failed to send message.');
+      setError({ message: err?.message || 'Failed to send message.' });
     } finally {
       setSending(false);
     }
@@ -838,6 +955,18 @@ function AdvisorTab({
         content: 'Chat cleared. Ask me a new question and I will base answers on the currently selected filters.',
       },
     ]);
+  }
+
+  function applyShorterDraft() {
+    const limit = error?.maxMessageChars ?? ADVISOR_MAX_MESSAGE_CHARS;
+    const shorter = buildShorterDraft(input, limit);
+    setInput(shorter);
+    setError({
+      message: `Shortened draft to fit ${limit} characters. You can edit and resend.`,
+      code: 'SHORTENED_DRAFT_READY',
+      maxMessageChars: limit,
+      currentLength: shorter.length,
+    });
   }
 
   return (
@@ -895,7 +1024,16 @@ function AdvisorTab({
 
         <div className="px-6 pb-6 space-y-3">
           {error && (
-            <p className="text-sm text-red-600">{error}</p>
+            <div className="space-y-2">
+              <p className={`text-sm ${error.code === 'SHORTENED_DRAFT_READY' ? 'text-emerald-700' : 'text-red-600'}`}>
+                {error.message}
+              </p>
+              {error.code === 'MESSAGE_TOO_LONG' && (
+                <p className="text-xs text-gray-600">
+                  Try splitting this into two messages, or use the quick shorten action below.
+                </p>
+              )}
+            </div>
           )}
           {showStarterPrompts && (
             <div>
@@ -934,11 +1072,26 @@ function AdvisorTab({
             />
             <button
               onClick={() => void sendMessage()}
-              disabled={sending || !input.trim()}
+              disabled={sending || !input.trim() || isOverLimit}
               className="self-end px-5 py-2.5 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:bg-gray-200 disabled:text-gray-400 font-medium"
             >
               Send
             </button>
+          </div>
+          <div className="flex items-center justify-between">
+            <p className={`text-xs ${isOverLimit ? 'text-red-600' : 'text-gray-500'}`}>
+              {inputChars}/{ADVISOR_MAX_MESSAGE_CHARS} characters
+            </p>
+            {isOverLimit && (
+              <button
+                type="button"
+                onClick={applyShorterDraft}
+                disabled={sending || !input.trim()}
+                className="text-xs px-2.5 py-1.5 rounded bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:bg-gray-100 disabled:text-gray-400"
+              >
+                Shorten for me
+              </button>
+            )}
           </div>
         </div>
       </div>
