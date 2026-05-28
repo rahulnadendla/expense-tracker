@@ -3,6 +3,9 @@ import { computeStatsSnapshot } from '@/lib/compute-stats';
 import { computeAdvisorOpsKpis } from '@/lib/compute-advisor-ops';
 import { generateAdvisorReply, type AdvisorMessage } from '@/lib/analyst-model';
 import { computeAdvisorItemInsights, shouldFetchItemInsights } from '@/lib/compute-advisor-items';
+import { classifyAdvisorIntent, intentConfidenceBand, type AdvisorIntent } from '@/lib/advisor-intent';
+import { deriveAdvisorSession } from '@/lib/advisor-session';
+import { buildDeterministicAdvisorReply, shouldUseDeterministicItemReply } from '@/lib/advisor-response';
 
 const MAX_BODY_BYTES = 40 * 1024;
 const MAX_MESSAGES = 20;
@@ -73,6 +76,14 @@ function recordTelemetryEvent({
   durationMs,
   bodyBytes,
   currentMessageChars,
+  itemInsightsUsed,
+  itemInsightsType,
+  intent,
+  intentConfidenceBand,
+  entityResolutionOutcome,
+  candidateCount,
+  resolvedItemCount,
+  contextSwitchDetected,
 }: {
   outcome: 'success' | 'validation_block' | 'rate_limited' | 'error';
   status: number;
@@ -82,6 +93,12 @@ function recordTelemetryEvent({
   currentMessageChars?: number;
   itemInsightsUsed?: boolean;
   itemInsightsType?: 'item_movers' | 'item_trend';
+  intent?: AdvisorIntent;
+  intentConfidenceBand?: 'low' | 'medium' | 'high';
+  entityResolutionOutcome?: 'resolved' | 'assumed' | 'clarified' | 'unresolved';
+  candidateCount?: number;
+  resolvedItemCount?: number;
+  contextSwitchDetected?: boolean;
 }) {
   const telemetry = getTelemetryStore();
   telemetry.requestsTotal += 1;
@@ -102,6 +119,12 @@ function recordTelemetryEvent({
     currentMessageChars: typeof currentMessageChars === 'number' ? currentMessageChars : null,
     itemInsightsUsed: itemInsightsUsed === true,
     itemInsightsType: itemInsightsType || null,
+    intent: intent || null,
+    intentConfidenceBand: intentConfidenceBand || null,
+    entityResolutionOutcome: entityResolutionOutcome || null,
+    candidateCount: typeof candidateCount === 'number' ? candidateCount : null,
+    resolvedItemCount: typeof resolvedItemCount === 'number' ? resolvedItemCount : null,
+    contextSwitchDetected: contextSwitchDetected === true,
     counters: {
       requestsTotal: telemetry.requestsTotal,
       successTotal: telemetry.successTotal,
@@ -290,28 +313,51 @@ export async function POST(request: Request) {
     const { stats, categoryFilter, periodFilter } = await computeStatsSnapshot(parsed.body.category, parsed.body.period);
     const opsKpis = await computeAdvisorOpsKpis();
     const currentQuestion = parsed.body.messages[parsed.body.messages.length - 1]?.content || '';
+    const session = deriveAdvisorSession(parsed.body.messages, currentQuestion);
+    const intentResult = classifyAdvisorIntent(currentQuestion, session, parsed.body.messages);
+    const confidenceBand = intentConfidenceBand(intentResult.confidence);
     let itemInsights:
       | Awaited<ReturnType<typeof computeAdvisorItemInsights>>
       | undefined;
-    if (shouldFetchItemInsights(currentQuestion)) {
+    if (
+      shouldFetchItemInsights(currentQuestion, parsed.body.messages) ||
+      session.inItemComparison ||
+      intentResult.intent === 'item_trend' ||
+      intentResult.intent === 'item_movers' ||
+      intentResult.intent === 'mixed'
+    ) {
       try {
         itemInsights = await computeAdvisorItemInsights({
           question: currentQuestion,
           categoryFilter,
+          intentResult,
+          messages: parsed.body.messages,
+          session,
         });
       } catch (itemInsightError) {
         // Non-fatal: keep advisor available even if item analytics retrieval fails.
         console.warn('Advisor item insights unavailable:', itemInsightError);
       }
     }
-    const reply = await generateAdvisorReply({
-      messages: parsed.body.messages,
-      stats,
-      opsKpis,
-      itemInsights,
-      categoryFilter,
-      periodFilter,
-    });
+
+    let reply: string;
+    const useDeterministicItemReply =
+      !!itemInsights &&
+      shouldUseDeterministicItemReply(itemInsights, intentResult, currentQuestion);
+
+    if (useDeterministicItemReply && itemInsights) {
+      reply = buildDeterministicAdvisorReply(itemInsights);
+    } else {
+      reply = await generateAdvisorReply({
+        messages: parsed.body.messages,
+        stats,
+        opsKpis,
+        itemInsights,
+        intentResult,
+        categoryFilter,
+        periodFilter,
+      });
+    }
 
     recordTelemetryEvent({
       outcome: 'success',
@@ -321,6 +367,12 @@ export async function POST(request: Request) {
       currentMessageChars: parsed.body.messages[parsed.body.messages.length - 1]?.content.length,
       itemInsightsUsed: !!itemInsights,
       itemInsightsType: itemInsights?.type,
+      intent: intentResult.intent,
+      intentConfidenceBand: confidenceBand,
+      entityResolutionOutcome: itemInsights?.type === 'item_trend' ? itemInsights.resolution_outcome : undefined,
+      candidateCount: itemInsights?.type === 'item_trend' ? (itemInsights.candidate_items?.length || 0) : undefined,
+      resolvedItemCount: itemInsights?.type === 'item_trend' ? (itemInsights.resolved_item_count || 0) : undefined,
+      contextSwitchDetected: itemInsights?.type === 'item_trend' ? itemInsights.context_switch_detected : undefined,
     });
     return NextResponse.json({ reply }, { headers: { 'Cache-Control': 'no-store, max-age=0' } });
   } catch (error: any) {
